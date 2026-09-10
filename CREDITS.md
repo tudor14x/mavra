@@ -1,0 +1,1 @@
+Microsoft, for [vswhere](https://github.com/microsoft/vswhere)
