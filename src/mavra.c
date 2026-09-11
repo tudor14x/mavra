@@ -241,7 +241,7 @@ int getVSInstallation(VSInstall **dst, int *dstLen)
     bool vswhereExists = doesVswhereExist(vswhereBuf);
 
     if(!vswhereExists) {
-        fprintf(errfile, "error: vswhere not found. place it next to the executable or make sure it's in the environment variables.\n");
+        fprintf(errfile, "error: vswhere not found. place it next to the executable or make sure the path to vswhere is in the environment variables.\n");
         return 36;
     }
 
