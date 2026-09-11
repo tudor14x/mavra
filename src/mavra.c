@@ -151,15 +151,104 @@ int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
     return 0;
 }
 
+int getCommandCode(char *cmdBuf)
+{
+    STARTUPINFOA si = {0};
+    PROCESS_INFORMATION pi = {0};
+
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+
+    DWORD exitCode = 1;
+
+    HANDLE hNul = CreateFileA(
+        "NUL",
+        GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+
+    if (hNul == INVALID_HANDLE_VALUE)
+        return false;
+
+    si.hStdOutput = hNul;
+    si.hStdError = hNul;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+    if (CreateProcessA(
+        NULL,
+        cmdBuf,
+        NULL,
+        NULL,
+        TRUE,
+        0,
+        NULL,
+        NULL,
+        &si,
+        &pi))
+    {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+
+    CloseHandle(hNul);
+
+    return (int)exitCode;
+}
+
+bool doesVswhereExist(char *out)
+{
+    assert(out);
+
+    char cwd[PATH_LEN_MAX] = {0};
+    GetModuleFileNameA(NULL, cwd, PATH_LEN_MAX);
+    {
+        char *last = strrchr(cwd, '\\');
+        if(last) {
+            *last = 0;
+        }
+    }
+
+    char fileBuf[PATH_LEN_MAX] = {0};
+    sprintf(fileBuf, "%s\\vswhere", cwd);
+
+    char vsBuf[] = "vswhere";
+
+    int fileCode = getCommandCode(fileBuf);
+    int vsCode = getCommandCode(vsBuf);
+
+    if(fileCode == 0) {
+        memcpy(out, fileBuf, strlen(fileBuf)+1);
+    }
+    if(vsCode == 0) {
+        memcpy(out, vsBuf, strlen(vsBuf)+1);
+    }
+
+    return fileCode == 0 || vsCode == 0;
+}
+
 int getVSInstallation(VSInstall **dst, int *dstLen)
 {
     assert(dst);
     assert(dstLen);
 
-    FILE *in = _popen("vswhere", "rt");
+    char vswhereBuf[PATH_LEN_MAX] = {0};
+    bool vswhereExists = doesVswhereExist(vswhereBuf);
+
+    if(!vswhereExists) {
+        fprintf(errfile, "error: vswhere not found. place it next to the executable or make sure it's in the environment variables.\n");
+        return 36;
+    }
+
+    FILE *in = _popen(vswhereBuf, "rt");
     if (!in)
     {
-        fprintf(errfile, "c_error(%d): failed to run vswhere. mavra requires vswhere to run.\n", errno);
+        fprintf(errfile, "c_error(%d): failed to run vswhere.\n", errno);
         return 12;
     }
 
@@ -192,10 +281,10 @@ int getVSInstallation(VSInstall **dst, int *dstLen)
     if (!installs)
     {
         fprintf(errfile, "c_error(%d): failed to allocate memory for VSInstall array\n", errno);
-        return 36;
+        return 37;
     }
 
-    in = _popen("vswhere.exe", "rt");
+    in = _popen(vswhereBuf, "rt");
     if (!in)
     {
         fprintf(stderr, "c_error(%d): failed to call vswhere.exe\n", errno);
