@@ -8,9 +8,15 @@
 #include <windows.h>
 #include <userenv.h>
 #include "mavra.h"
+#include "string_utils.h"
 
-FILE *errfile;
+FILE *errfile = NULL;
 char userPath[PATH_LEN_MAX] = {0};
+
+#define FREE_WSDK() { free(ctx->wsdkInstalls); ctx->wsdkInstallsLen = 0; }
+#define FREE_VS() { free(ctx->vsInstalls); ctx->vsInstallsLen = 0; }
+#define FREE_MSVC() { for(int i = 0; i < ctx->vsInstallsLen; ++i) { free(ctx->msvcInstalls[i].installs); } free(ctx->msvcInstalls); ctx->msvcInstallsLen = 0; }
+#define FREE_ALL() FREE_WSDK(); FREE_VS(); FREE_MSVC()
 
 int getUserPath(char **dst)
 {
@@ -57,10 +63,9 @@ int getUserPath(char **dst)
     return 0;
 }
 
-int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
+int loadWSDKInstalls(MavraContext *ctx)
 {
-    assert(dst);
-    assert(dstLen);
+    assert(ctx);
 
     HKEY key;
     LSTATUS status = RegOpenKeyExA(HKEY_LOCAL_MACHINE, WSDK_INSTALL_REGKEY_PATH, 0, KEY_READ | KEY_ENUMERATE_SUB_KEYS, &key);
@@ -88,8 +93,8 @@ int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
         return 6;
     }
 
-    *dst = (WSDKInstall *)calloc(installCount, sizeof(WSDKInstall));
-    if (!(*dst))
+    ctx->wsdkInstalls = (WSDKInstall *)calloc(installCount, sizeof(WSDKInstall));
+    if (!(ctx->wsdkInstalls))
     {
         fprintf(errfile, "c_error(%lu): failed to allocate memory for Windows SDK install data.\n", errno);
         RegCloseKey(key);
@@ -104,7 +109,7 @@ int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
         if (status != ERROR_SUCCESS)
         {
             fprintf(errfile, "win32_error(%lu): failed to retrieve %lu-th subkey key of Windows SDK install registry key.\n", status);
-            free(*dst);
+            FREE_WSDK();
             RegCloseKey(key);
             return 8;
         }
@@ -118,7 +123,7 @@ int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
         {
             printf("%lu\n", ERROR_MORE_DATA);
             fprintf(errfile, "win32_error(%lu): failed to retrieve `InstallationFolder` value of subkey `%s`.\n", status, verKeyName);
-            free(*dst);
+            FREE_WSDK();
             RegCloseKey(key);
             return 9;
         }
@@ -130,7 +135,7 @@ int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
         if (status != ERROR_SUCCESS)
         {
             fprintf(errfile, "win32_error(%lu): failed to retrieve `ProductVersion` value of subkey `%s`.\n", status, verKeyName);
-            free(*dst);
+            FREE_WSDK();
             RegCloseKey(key);
             return 10;
         }
@@ -142,12 +147,12 @@ int getWSDKInstalls(WSDKInstall **dst, int *dstLen)
             memcpy(install.version, buf, sizeof(buf));
         }
 
-        (*dst)[i] = install;
+        ctx->wsdkInstalls[i] = install;
     }
 
     RegCloseKey(key);
 
-    *dstLen = installCount;
+    ctx->wsdkInstallsLen = installCount;
     return 0;
 }
 
@@ -232,16 +237,15 @@ bool doesVswhereExist(char *out)
     return fileCode == 0 || vsCode == 0;
 }
 
-int getVSInstallation(VSInstall **dst, int *dstLen)
+int loadVSInstalls(MavraContext *ctx)
 {
-    assert(dst);
-    assert(dstLen);
+    assert(ctx);
 
     char vswhereBuf[PATH_LEN_MAX] = {0};
     bool vswhereExists = doesVswhereExist(vswhereBuf);
 
     if(!vswhereExists) {
-        fprintf(errfile, "error: vswhere not found. place it next to the executable or make sure it's in the environment variables.\n");
+        fprintf(errfile, "error: vswhere not found. place it next to the executable or make sure the path to vswhere is in the environment variables.\n");
         return 36;
     }
 
@@ -251,9 +255,6 @@ int getVSInstallation(VSInstall **dst, int *dstLen)
         fprintf(errfile, "c_error(%d): failed to run vswhere.\n", errno);
         return 12;
     }
-
-    /* caller-managed */
-    VSInstall *installs;
 
     DWORD installCount = 0;
     char line[2048];
@@ -277,18 +278,18 @@ int getVSInstallation(VSInstall **dst, int *dstLen)
 
     _pclose(in);
 
-    installs = (VSInstall *)calloc(installCount, sizeof(VSInstall));
-    if (!installs)
+    ctx->vsInstalls = (VSInstall *)calloc(installCount, sizeof(VSInstall));
+    if (!ctx->vsInstalls)
     {
-        fprintf(errfile, "c_error(%d): failed to allocate memory for VSInstall array\n", errno);
+        fprintf(errfile, "c_error(%d): failed to allocate memory for VSInstall array.\n", errno);
         return 37;
     }
 
     in = _popen(vswhereBuf, "rt");
     if (!in)
     {
-        fprintf(stderr, "c_error(%d): failed to call vswhere.exe\n", errno);
-        free(installs);
+        fprintf(stderr, "c_error(%d): failed to call vswhere.\n", errno);
+        FREE_VS();
         return 13;
     }
 
@@ -315,23 +316,23 @@ int getVSInstallation(VSInstall **dst, int *dstLen)
 
         if (strcmp(key, "instanceId") == 0)
         {
-            installs[count++] = install;
+            ctx->vsInstalls[count++] = install;
             memset(&install, 0, sizeof(VSInstall));
         }
         else if (strcmp(key, "displayName") == 0)
         {
             assert(count > 0);
-            memcpy(installs[count - 1].displayName, value, strlen(value));
+            memcpy(ctx->vsInstalls[count - 1].displayName, value, strlen(value));
         }
         else if (strcmp(key, "installationPath") == 0)
         {
             assert(count > 0);
-            memcpy(installs[count - 1].dir, value, strlen(value));
+            memcpy(ctx->vsInstalls[count - 1].dir, value, strlen(value));
         }
         else if (strcmp(key, "installationVersion") == 0)
         {
             assert(count > 0);
-            memcpy(installs[count - 1].version, value, strlen(value));
+            memcpy(ctx->vsInstalls[count - 1].version, value, strlen(value));
         }
     }
     _pclose(in);
@@ -339,55 +340,26 @@ int getVSInstallation(VSInstall **dst, int *dstLen)
     if (count == 0)
     {
         fprintf(errfile, "error: no Visual Studio installations found\n");
-        free(installs);
+        FREE_VS();
         return 14;
     }
 
-    *dst = installs;
-    *dstLen = count;
+    ctx->vsInstallsLen = count;
 
     return 0;
 }
 
-int createDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkInstalls, int *wsdkMaxLen, VSInstall **vsInstalls, int *vsMaxLen, MSVCInstalls **msvcInstalls, int *wsdk, int *vs, int *ms)
+int loadMSVCInstalls(MavraContext *ctx)
 {
-    assert(dataFilePath);
-    assert(wsdkInstalls);
-    assert(wsdkMaxLen);
-    assert(vsInstalls);
-    assert(vsMaxLen);
-    assert(wsdk);
-    assert(vs);
-    assert(ms);
+    assert(ctx);
 
-    int ec;
-    ec = getWSDKInstalls(wsdkInstalls, wsdkMaxLen);
-    if (ec != 0)
-    {
-        fprintf(errfile, "error: failed to retrieve Windows SDK installation(s).\n");
-        return ec;
-    }
-
-    ec = getVSInstallation(vsInstalls, vsMaxLen);
-    if (ec != 0)
-    {
-        fprintf(errfile, "error: failed to retrieve Visual Studio installation(s).\n");
-        free(*wsdkInstalls);
-        return ec;
-    }
-
-    // each vs install has at least one msvc install
-    (*msvcInstalls) = (MSVCInstalls *)calloc(*vsMaxLen, sizeof(MSVCInstalls));
-    if (!(*msvcInstalls))
-    {
+    ctx->msvcInstalls = (MSVCInstalls *)calloc(ctx->vsInstallsLen, sizeof(MSVCInstalls));
+    if (!ctx->msvcInstalls) {
         fprintf(errfile, "c_error(%d): failed to allocate memory for MSVCInstalls array while writing to data file.\n", errno);
-        free(*wsdkInstalls);
-        free(*vsInstalls);
         return 15;
     }
 
-    for (int i = 0; i < (*vsMaxLen); ++i)
-    {
+    for (int i = 0; i < ctx->vsInstallsLen; ++i) {
         char fileBuf[PATH_LEN_MAX] = {0};
 
         int msvcMaxLen = 0;
@@ -398,22 +370,14 @@ int createDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdk
             HANDLE hFind;
             {
 
-                snprintf(fileBuf, sizeof(fileBuf), "%s\\VC\\Tools\\MSVC\\*", (*vsInstalls)[i].dir);
+                snprintf(fileBuf, sizeof(fileBuf), "%s\\VC\\Tools\\MSVC\\*", ctx->vsInstalls[i].dir);
 
                 hFind = FindFirstFileA(fileBuf, &fd);
                 if (hFind == INVALID_HANDLE_VALUE)
                 {
                     fprintf(errfile, "w32_error(%d): could not open directory `%s` for fetching MSVC version.\n", GetLastError(), fileBuf);
 
-                    free(*wsdkInstalls);
-                    free(*vsInstalls);
-
-                    for (int j = 0; j < *vsMaxLen; ++j)
-                    {
-                        free((*msvcInstalls)[j].installs);
-                    }
-
-                    free(*msvcInstalls);
+                    freeMavraContext(ctx);
 
                     return 16;
                 }
@@ -434,20 +398,13 @@ int createDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdk
         }
 
         // allocate the memory for every msvc installation for the current i-th vs installation
-        (*msvcInstalls)[i].installs = (MSVCInstall *)calloc(msvcMaxLen, sizeof(MSVCInstall));
-        if (!((*msvcInstalls)[i].installs))
+        ctx->msvcInstalls[i].installs = (MSVCInstall *)calloc(msvcMaxLen, sizeof(MSVCInstall));
+        if (!(ctx->msvcInstalls[i].installs))
         {
             fprintf(errfile, "c_error(%d): failed to allocate memory for MSVCInstall array for Visual Studio installation %d while writing to data file\n", errno, i);
 
-            free(*wsdkInstalls);
-            free(*vsInstalls);
+            freeMavraContext(ctx);
 
-            for (int i = 0; i < *vsMaxLen; ++i)
-            {
-                free((*msvcInstalls)[i].installs);
-            }
-
-            free(*msvcInstalls);
             return 17;
         }
 
@@ -456,22 +413,14 @@ int createDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdk
             HANDLE hFind;
             {
 
-                snprintf(fileBuf, sizeof(fileBuf), "%s\\VC\\Tools\\MSVC\\*", (*vsInstalls)[i].dir);
+                snprintf(fileBuf, sizeof(fileBuf), "%s\\VC\\Tools\\MSVC\\*", ctx->vsInstalls[i].dir);
 
                 hFind = FindFirstFileA(fileBuf, &fd);
                 if (hFind == INVALID_HANDLE_VALUE)
                 {
                     fprintf(errfile, "error: could not open directory `%s` for fetching MSVC version\n", fileBuf);
 
-                    free(*wsdkInstalls);
-                    free(*vsInstalls);
-
-                    for (int i = 0; i < *vsMaxLen; ++i)
-                    {
-                        free((*msvcInstalls)[i].installs);
-                    }
-
-                    free(*msvcInstalls);
+                    freeMavraContext(ctx);
 
                     return 18;
                 }
@@ -483,8 +432,8 @@ int createDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdk
                     strcmp(fd.cFileName, ".") != 0 &&
                     strcmp(fd.cFileName, "..") != 0)
                 {
-                    memcpy((*msvcInstalls)[i].installs[(*msvcInstalls)[i].installsMaxLen].version, fd.cFileName, strlen(fd.cFileName) + 1);
-                    (*msvcInstalls)[i].installsMaxLen++;
+                    memcpy(ctx->msvcInstalls[i].installs[ctx->msvcInstalls[i].installsMaxLen].version, fd.cFileName, strlen(fd.cFileName) + 1);
+                    ctx->msvcInstalls[i].installsMaxLen++;
                 }
             } while (FindNextFileA(hFind, &fd));
 
@@ -492,94 +441,107 @@ int createDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdk
             FindClose(hFind);
         }
     }
+    return 0;
+}
+
+int createDataFile(FILE **dataFile, char *const dataFilePath, MavraContext *ctx)
+{
+    assert(dataFile);
+    assert(dataFilePath);
+    assert(ctx);
+
+    int ec;
+    ec = loadWSDKInstalls(ctx);
+    if (ec != 0)
+    {
+        fprintf(errfile, "error: failed to retrieve Windows SDK installation(s).\n");
+        return ec;
+    }
+
+    ec = loadVSInstalls(ctx);
+    if (ec != 0)
+    {
+        fprintf(errfile, "error: failed to retrieve Visual Studio installation(s).\n");
+        if(ctx->vsInstalls) FREE_VS();
+        FREE_WSDK();
+        return ec;
+    }
+
+    // each vs install has at least one msvc install
+    ec = loadMSVCInstalls(ctx);
+    if (ec != 0) {
+        fprintf(errfile, "error: failed to retrieve MSVC installation(s).\n", errno);
+        FREE_WSDK();
+        FREE_VS();
+        return ec;
+    }
 
     *dataFile = fopen(dataFilePath, "w");
     if (!(*dataFile))
     {
         fprintf(errfile, "c_error(%d): failed to open data file `%s` for writing.\n", errno, dataFilePath);
-        free(*wsdkInstalls);
-        free(*vsInstalls);
 
-        for (int i = 0; i < *vsMaxLen; ++i)
-        {
-            free((*msvcInstalls)[i].installs);
-        }
+        freeMavraContext(ctx);
 
-        free(*msvcInstalls);
         return 19;
     }
 
     fprintf(*dataFile, "[wsdk]\n");
-    for (int i = 0; i < *wsdkMaxLen; ++i)
+    for (int i = 0; i < ctx->wsdkInstallsLen; ++i)
     {
-        fprintf(*dataFile, "%d;%s;%s\n", i + 1, (*wsdkInstalls)[i].dir, (*wsdkInstalls)[i].version);
+        fprintf(*dataFile, "%d;%s;%s\n", i + 1, ctx->wsdkInstalls[i].dir, ctx->wsdkInstalls[i].version);
     }
 
     fprintf(*dataFile, "[vs]\n");
-    for (int i = 0; i < *vsMaxLen; ++i)
+    for (int i = 0; i < ctx->vsInstallsLen; ++i)
     {
-        fprintf(*dataFile, "%d;%d;%s;%s;%s\n", i + 1, (*msvcInstalls)[i].installsMaxLen, (*vsInstalls)[i].dir, (*vsInstalls)[i].displayName, (*vsInstalls)[i].version);
+        fprintf(*dataFile, "%d;%d;%s;%s;%s\n", i + 1, ctx->msvcInstalls[i].installsMaxLen, ctx->vsInstalls[i].dir, ctx->vsInstalls[i].displayName, ctx->vsInstalls[i].version);
     }
 
     fprintf(*dataFile, "[msvc]\n");
 
     int sum = 0;
 
-    for (int i = 0; i < *vsMaxLen; ++i)
+    for (int i = 0; i < ctx->vsInstallsLen; ++i)
     {
-        for (int j = 0; j < (*msvcInstalls)[i].installsMaxLen; ++j)
+        for (int j = 0; j < ctx->msvcInstalls[i].installsMaxLen; ++j)
         {
             int idx = sum + j + 1;
-            fprintf(*dataFile, "%d;%d;%s\n", idx, j + 1, (*msvcInstalls)[i].installs[j].version);
+            fprintf(*dataFile, "%d;%d;%s\n", idx, j + 1, ctx->msvcInstalls[i].installs[j].version);
         }
-        sum += (*msvcInstalls)[i].installsMaxLen;
+        sum += ctx->msvcInstalls[i].installsMaxLen;
     }
 
     fprintf(*dataFile, "[settings]\n");
-    fprintf(*dataFile, "wsdk=%d\nvs=%d\nms=%d", (*wsdk) + 1, (*vs) + 1, (*ms) + 1);
+    fprintf(*dataFile, "wsdk=%d\nvs=%d\nms=%d", ctx->wsdk + 1, ctx->vs + 1, ctx->ms + 1);
 
     fclose(*dataFile);
 
     return 0;
 }
 
-int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkInstalls, int *wsdkMaxLen, VSInstall **vsInstalls, int *vsMaxLen, MSVCInstalls **msvcInstalls, int *wsdk, int *vs, int *ms)
+int readDataFile(FILE **dataFile, char *const dataFilePath, MavraContext *ctx)
 {
     assert(dataFile);
     assert(dataFilePath);
-    assert(wsdkInstalls);
-    assert(wsdkMaxLen);
-    assert(vsInstalls);
-    assert(msvcInstalls);
-    assert(vsMaxLen);
-    assert(wsdk);
-    assert(vs);
-    assert(ms);
+    assert(ctx);
 
-    if ((*wsdkInstalls))
+    if (ctx->wsdkInstalls)
     {
-        free(*wsdkInstalls);
+        FREE_WSDK();
     }
-    if ((*vsInstalls))
+    if (ctx->vsInstalls)
     {
-        free(*vsInstalls);
+        FREE_VS();
     }
 
-    if ((*msvcInstalls))
+    if (ctx->msvcInstalls)
     {
-        for (int i = 0; i < *vsMaxLen; ++i)
-        {
-            free((*msvcInstalls)[i].installs);
-        }
-
-        free(*msvcInstalls);
+        FREE_MSVC();
     }
 
     char lineBuf[1024] = {0};
     int mode = MODE_NULL, line = 1;
-
-    *wsdkMaxLen = 0;
-    *vsMaxLen = 0;
 
     // count all winsdk and vs installations to know exactly how much memory to allocate
     while (fgets(lineBuf, sizeof(lineBuf), *dataFile))
@@ -607,13 +569,19 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
             continue;
         }
 
-        char temp[64];
+        char temp[64] = {0};
         memcpy(temp, lineBuf, offset);
+
+        if(!strIsInteger(temp)) {
+            fprintf(errfile, "error: expected integer while reading %s toolchain index, got `%s` instead.\n", (mode==MODE_MSVC)?"MSVC":((mode==MODE_VS)?"Visual Studio":"Windows SDK"), temp);
+            return 39;
+        }
+        
         int index = atoi(temp) - 1;
 
         if (index < 0)
         {
-            fprintf(errfile, "%s:%d: error: toolchain index is below 1.\n", dataFilePath, line);
+            fprintf(errfile, "error: %s:%d: toolchain index is below 1.\n", dataFilePath, line);
             fclose(*dataFile);
             return 20;
         }
@@ -622,23 +590,23 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
         {
         case MODE_WSDK:
         {
-            (*wsdkMaxLen)++;
+            ctx->wsdkInstallsLen++;
         }
         break;
 
         case MODE_VS:
         {
-            (*vsMaxLen)++;
+            ctx->vsInstallsLen++;
         }
         break;
 
-        // number of msvc installation is sequal to vsMaxLen so it's pointless to count them
+        // number of msvc installation is sequal to ctx->vsInstallsLen so it's pointless to count them
         case MODE_MSVC:
             break;
 
         default:
         {
-            fprintf(errfile, "%s:%d: error: failed to retrieve toolchain index: file malformed.\n", dataFilePath, line);
+            fprintf(errfile, "error: %s:%d: failed to retrieve toolchain index: file malformed.\n", dataFilePath, line);
             fclose(*dataFile);
             return 21;
         }
@@ -655,31 +623,30 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
         return 22;
     }
 
-    (*wsdkInstalls) = (WSDKInstall *)calloc(*wsdkMaxLen, sizeof(WSDKInstall));
-    if (!(*wsdkInstalls))
+    ctx->wsdkInstalls = (WSDKInstall *)calloc(ctx->wsdkInstallsLen, sizeof(WSDKInstall));
+    if (!ctx->wsdkInstalls)
     {
         fprintf(errfile, "c_error(%d): failed to allocate memory for WSDKInstall array while fetching data.\n", errno);
         fclose(*dataFile);
         return 23;
     }
 
-    (*vsInstalls) = (VSInstall *)calloc(*vsMaxLen, sizeof(VSInstall));
-    if (!(*vsInstalls))
+    ctx->vsInstalls = (VSInstall *)calloc(ctx->vsInstallsLen, sizeof(VSInstall));
+    if (!ctx->vsInstalls)
     {
         fprintf(errfile, "c_error(%d): failed to allocate memory for VSInstall array while fetching data.\n", errno);
         fclose(*dataFile);
-        free(*wsdkInstalls);
+        FREE_WSDK();
         return 24;
     }
 
-    (*msvcInstalls) = (MSVCInstalls *)calloc(*vsMaxLen, sizeof(MSVCInstalls));
-    if (!(*msvcInstalls))
+    ctx->msvcInstalls = (MSVCInstalls *)calloc(ctx->vsInstallsLen, sizeof(MSVCInstalls));
+    if (!ctx->msvcInstalls)
     {
         fprintf(errfile, "c_error(%d): failed to allocate memory for MSVCInstalls array while fetching data.\n", errno);
         fclose(*dataFile);
-        free(*wsdkInstalls);
-        free(*vsInstalls);
-
+        FREE_WSDK();
+        FREE_VS();
         return 25;
     }
 
@@ -720,20 +687,11 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
             case MODE_NULL:
                 break;
 
-#define CLEANUP()                          \
-    free(*wsdkInstalls);                   \
-    free(*vsInstalls);                     \
-    for (int i = 0; i < *vsMaxLen; ++i)    \
-    {                                      \
-        free((*msvcInstalls)[i].installs); \
-    }                                      \
-    free(*msvcInstalls);                   \
-    fclose(*dataFile)
-
+#define CLEANUP() freeMavraContext(ctx); fclose(*dataFile)
 #define PANIC(KEYNAME)                                                                     \
     if (end == lineLength)                                                                 \
     {                                                                                      \
-        fprintf(errfile, "%s:%d: error: expected %s.\n", dataFilePath, line - 1, KEYNAME); \
+        fprintf(errfile, "error: %s:%d: expected %s.\n", dataFilePath, line - 1, KEYNAME); \
         CLEANUP();                                                                         \
         return 26;                                                                         \
     }
@@ -750,11 +708,11 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
                 GET_NEXT_VALUE(";", "toolchain index");
                 GET_NEXT_VALUE(";", "installation path");
 
-                memcpy((*wsdkInstalls)[wsdkLen].dir, buf, strlen(buf) + 1);
+                memcpy(ctx->wsdkInstalls[wsdkLen].dir, buf, strlen(buf) + 1);
 
                 GET_NEXT_VALUE(";", "toolchain version");
 
-                memcpy((*wsdkInstalls)[wsdkLen].version, buf, strlen(buf) + 1);
+                memcpy(ctx->wsdkInstalls[wsdkLen].version, buf, strlen(buf) + 1);
 
                 wsdkLen++;
             }
@@ -766,11 +724,11 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
                 GET_NEXT_VALUE(";", "MSVC install count");
                 int val = atoi(buf);
 
-                (*vsInstalls)[vsLen].msvcInstallCount = val;
+                ctx->vsInstalls[vsLen].msvcInstallCount = val;
 
-                (*msvcInstalls)[vsLen].installsMaxLen = (*vsInstalls)[vsLen].msvcInstallCount;
-                (*msvcInstalls)[vsLen].installs = (MSVCInstall *)calloc((*msvcInstalls)[vsLen].installsMaxLen, sizeof(MSVCInstall));
-                if (!((*msvcInstalls)[vsLen].installs))
+                ctx->msvcInstalls[vsLen].installsMaxLen = ctx->vsInstalls[vsLen].msvcInstallCount;
+                ctx->msvcInstalls[vsLen].installs = (MSVCInstall *)calloc(ctx->msvcInstalls[vsLen].installsMaxLen, sizeof(MSVCInstall));
+                if (!(ctx->msvcInstalls[vsLen].installs))
                 {
                     fprintf(errfile, "c_error(%lu): failed to allocate memory for MSVCInstall array while reading data file.\n", errno);
 
@@ -781,15 +739,15 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
 
                 GET_NEXT_VALUE(";", "installation path");
 
-                memcpy((*vsInstalls)[vsLen].dir, buf, strlen(buf) + 1);
+                memcpy(ctx->vsInstalls[vsLen].dir, buf, strlen(buf) + 1);
 
                 GET_NEXT_VALUE(";", "display name");
 
-                memcpy((*vsInstalls)[vsLen].displayName, buf, strlen(buf) + 1);
+                memcpy(ctx->vsInstalls[vsLen].displayName, buf, strlen(buf) + 1);
 
                 GET_NEXT_VALUE(";", "toolchain version");
 
-                memcpy((*vsInstalls)[vsLen].version, buf, strlen(buf) + 1);
+                memcpy(ctx->vsInstalls[vsLen].version, buf, strlen(buf) + 1);
 
                 vsLen++;
             }
@@ -799,61 +757,78 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
             {
                 GET_NEXT_VALUE("=", "'=' after variable name");
 
-                // TODO: implement type checking
                 if (strcmp(buf, "wsdk") == 0)
                 {
+                    if(!strIsInteger(lineView)) {
+                        fprintf(errfile, "error: %s:%d: failed to parse Windows SDK toolchain index: expected integer after '=', got `%s` instead.\n", dataFilePath, line, lineView);
+                        CLEANUP();
+                        return 38;
+                    }
+
                     int val = atoi(lineView);
-                    if (val < 1 || val > *wsdkMaxLen)
+                    if (val < 1 || val > ctx->wsdkInstallsLen)
                     {
-                        fprintf(errfile, "%s:%d: error: toolchain index (%d) out of bounds. expected integer between 1 and number of elements available (%d).\n", dataFilePath, line, val, *wsdkMaxLen);
+                        fprintf(errfile, "error: %s:%d: failed to assign value to Windows SDK toolchain index: value (%d) out of bounds. expected integer between 1 and number of elements available (%d).\n", dataFilePath, line, val, ctx->wsdkInstallsLen);
 
                         CLEANUP();
 
                         return 27;
                     }
 
-                    *wsdk = val - 1;
+                    ctx->wsdk = val - 1;
                 }
                 else if (strcmp(buf, "vs") == 0)
                 {
+                    if(!strIsInteger(lineView)) {
+                        fprintf(errfile, "error: failed to parse Visual Studio toolchain index: expected integer after '=', got `%s` instead.\n", lineView);
+                        CLEANUP();
+                        return 38;
+                    }
+
                     int val = atoi(lineView);
 
-                    if (val < 1 || val > *vsMaxLen)
+                    if (val < 1 || val > ctx->vsInstallsLen)
                     {
-                        fprintf(errfile, "%s:%d: error: toolchain index (%d) out of bounds. expected integer between 1 and number of elements available (%d).\n", dataFilePath, line, val, *vsMaxLen);
+                        fprintf(errfile, "error: %s:%d: failed to assign value to Visual Studio toolchain index: value (%d) out of bounds. expected integer between 1 and number of elements available (%d).\n", dataFilePath, line, val, ctx->vsInstallsLen);
 
                         CLEANUP();
 
                         return 28;
                     }
 
-                    *vs = val - 1;
+                    ctx->vs = val - 1;
                 }
                 else if (strcmp(buf, "ms") == 0)
                 {
+                    if(!strIsInteger(lineView)) {
+                        fprintf(errfile, "error: %s:%d: error: failed to parse MSVC toolchain index: expected integer after '=', got `%s` instead.\n", dataFilePath, line, lineView);
+                        CLEANUP();
+                        return 38;
+                    }
+
                     int val = atoi(lineView);
 
                     int msvcMaxLen = 0;
 
-                    for (int i = 0; i < *vsMaxLen; ++i)
+                    for (int i = 0; i < ctx->vsInstallsLen; ++i)
                     {
-                        msvcMaxLen += (*vsInstalls)[i].msvcInstallCount;
+                        msvcMaxLen += ctx->vsInstalls[i].msvcInstallCount;
                     }
 
                     if (val < 1 || val > msvcMaxLen)
                     {
-                        fprintf(errfile, "%s:%d: error: toolchain index (%d) out of bounds. expected integer between 1 and number of elements available (%d).\n", dataFilePath, line, val, *vsMaxLen);
+                        fprintf(errfile, "error: %s:%d: failed to assign value to MSVC toolchain index: value (%d) out of bounds. expected integer between 1 and number of elements available (%d).\n", dataFilePath, line, val, ctx->vsInstallsLen);
 
                         CLEANUP();
 
                         return 29;
                     }
 
-                    *ms = val - 1;
+                    ctx->ms = val - 1;
                 }
                 else
                 {
-                    fprintf(errfile, "%s:%d: error: unknown variable `%s`.\n", dataFilePath, line, buf);
+                    fprintf(errfile, "error: %s:%d: unknown variable `%s`.\n", dataFilePath, line, buf);
 
                     CLEANUP();
 
@@ -867,9 +842,22 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
                 GET_NEXT_VALUE(";", "toolchain index");
 
                 // sum of every bla bla bla until this one
+
+                if(!strIsInteger(buf)) {
+                    fprintf(errfile, "error: failed to parse MSVC installation: expected integer for toolIndex argument, got `%s` instead.\n", lineView);
+                    CLEANUP();
+                     return 38;
+                }
+
                 int toolIndex = atoi(buf);
 
                 GET_NEXT_VALUE(";", "MSVC installation index");
+
+                if(!strIsInteger(buf)) {
+                    fprintf(errfile, "error: failed to parse MSVC installation: expected integer for toolIndex argument, got `%s` instead.\n", lineView);
+                    CLEANUP();
+                     return 38;
+                }
 
                 int installIndex = atoi(buf);
 
@@ -878,18 +866,18 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
                 int msvcIndex = 0;
                 int remaining = toolIndex;
 
-                for (int i = 0; i < *vsMaxLen; ++i)
+                for (int i = 0; i < ctx->vsInstallsLen; ++i)
                 {
-                    if (remaining <= (*msvcInstalls)[i].installsMaxLen)
+                    if (remaining <= ctx->msvcInstalls[i].installsMaxLen)
                     {
                         msvcIndex = i;
                         break;
                     }
 
-                    remaining -= (*msvcInstalls)[i].installsMaxLen;
+                    remaining -= ctx->msvcInstalls[i].installsMaxLen;
                 }
 
-                memcpy((*msvcInstalls)[msvcIndex].installs[installIndex - 1].version, buf, strlen(buf) + 1);
+                memcpy(ctx->msvcInstalls[msvcIndex].installs[installIndex - 1].version, buf, strlen(buf) + 1);
             }
             break;
 
@@ -913,384 +901,33 @@ int readDataFile(FILE **dataFile, char *const dataFilePath, WSDKInstall **wsdkIn
     return 0;
 }
 
-void listSDKs(WSDKInstall *wsdkInstalls, int wsdkMaxLen, VSInstall *vsInstalls, int vsMaxLen, MSVCInstalls *msvcInstalls, int wsdk, int vs, int ms)
+void freeMavraContext(MavraContext *ctx)
 {
-    assert(wsdkInstalls);
-    assert(wsdkMaxLen);
-    assert(vsInstalls);
-    assert(vsMaxLen);
-    assert(msvcInstalls);
+    assert(ctx);
+    FREE_ALL();
+}
+
+void listSDKs(MavraContext *ctx)
+{
+    assert(ctx);
 
     printf("Windows SDK installations:\n");
-    for (int i = 0; i < wsdkMaxLen; ++i)
+    for (int i = 0; i < ctx->wsdkInstallsLen; ++i)
     {
-        printf("[%d] -- %s -- %s\n", i + 1, wsdkInstalls[i].dir, wsdkInstalls[i].version);
+        printf("[%d] -- %s -- %s\n", i + 1, ctx->wsdkInstalls[i].dir, ctx->wsdkInstalls[i].version);
     }
     printf("\n");
 
     printf("Visual Studio installations:\n");
-    for (int i = 0; i < vsMaxLen; ++i)
+    for (int i = 0; i < ctx->vsInstallsLen; ++i)
     {
-        printf("[%d] -- %s -- %s -- %s\n", i + 1, vsInstalls[i].dir, vsInstalls[i].displayName, vsInstalls[i].version);
+        printf("[%d] -- %s -- %s -- %s\n", i + 1, ctx->vsInstalls[i].dir, ctx->vsInstalls[i].displayName, ctx->vsInstalls[i].version);
 
         printf("\tMSVC installations:\n");
-        for (int j = 0; j < vsInstalls[i].msvcInstallCount; ++j)
+        for (int j = 0; j < ctx->vsInstalls[i].msvcInstallCount; ++j)
         {
-            printf("\t[%d] -- %s\n", (i + j + 1), msvcInstalls[i].installs[j].version);
+            printf("\t[%d] -- %s\n", (i + j + 1), ctx->msvcInstalls[i].installs[j].version);
         }
     }
     printf("\n");
-}
-
-// case-senstiive
-bool beginsWith(const char *str, const char *control)
-{
-    return strncmp(str, control, strlen(control)) == 0;
-}
-
-// not case-sensitive
-bool beginsWithNCS(const char *str, const char *control)
-{
-    int ctrlen = strlen(control), strrlen = strlen(str);
-    if (ctrlen > strrlen)
-    {
-        return false;
-    }
-
-    for (int i = 0; i < ctrlen; ++i)
-    {
-        if (isalpha(str[i]))
-        {
-            if (tolower(str[i]) != tolower(control[i]))
-            {
-                return false;
-            }
-        }
-        else
-        {
-            if (control[i] != str[i])
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-void toLowerStr(char *str)
-{
-    for (int i = 0; i < strlen(str); ++i)
-    {
-        str[i] = tolower(str[i]);
-    }
-}
-
-int occurence(const char *str, const char *substr)
-{
-    char *ptr = strstr(str, substr);
-    if (!ptr)
-    {
-        return strlen(str);
-    }
-    return (int)(ptr - str);
-}
-
-int main(int argc, char **argv)
-{
-    errfile = stderr;
-    assert(errfile);
-
-    int exitCode = 0;
-
-    // save user path
-    {
-        char *temp;
-        int ec = getUserPath(&temp);
-        if (ec != 0)
-        {
-            fprintf(errfile, "error(%d): failed to retrieve user profile directory.\n", ec);
-            return ec;
-        }
-        memcpy(userPath, temp, strlen(temp) + 1);
-        free(temp);
-    }
-
-    WSDKInstall *wsdkInstalls = NULL;
-    VSInstall *vsInstalls = NULL;
-
-    // not a mistake; MSVCInstalls is a struct comprised of a MSVCInstall array and a len variable
-    MSVCInstalls *msvcInstalls = NULL;
-
-    // msvcMaxLen would be redundant as it's always equal to vsMaxLen
-    int wsdkMaxLen = 0, vsMaxLen = 0, wsdk = 0, vs = 0, ms = 0;
-
-#define SAVE_DATA()                                                                                                                       \
-    int ec = createDataFile(&dataFile, dataFilePath, &wsdkInstalls, &wsdkMaxLen, &vsInstalls, &vsMaxLen, &msvcInstalls, &wsdk, &vs, &ms); \
-    if (ec != 0)                                                                                                                          \
-    {                                                                                                                                     \
-        fprintf(errfile, "error(%d): failed to write data file.\n", ec);                                                                  \
-        return ec;                                                                                                                        \
-    }
-
-    char dataFilePath[PATH_LEN_MAX];
-    (void)snprintf(dataFilePath, sizeof(dataFilePath), "%s\\%s", userPath, MAVRA_INSTALL_DATA_PATH);
-    FILE *dataFile = fopen(dataFilePath, "r");
-
-    if (!dataFile)
-    {
-        SAVE_DATA();
-    }
-    else
-    {
-        int ec = readDataFile(&dataFile, dataFilePath, &wsdkInstalls, &wsdkMaxLen, &vsInstalls, &vsMaxLen, &msvcInstalls, &wsdk, &vs, &ms);
-        if (ec != 0)
-        {
-            fprintf(errfile, "error(%d): failed to read data file.\n", ec);
-            return ec;
-        }
-    }
-
-#if defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && MASM_ARCHITECTURE_AGNOSTIC_BUILD == 0
-    int targetArchitecture = TARGET_MASM_ARCHITECTURE;
-#elif defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && MASM_ARCHITECTURE_AGNOSTIC_BUILD == 1
-    int targetArchitecture = 86;
-#endif // defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && MASM_ARCHITECTURE_AGNOSTIC_BUILD == 0
-
-    bool printHelp = false, changed = false;
-
-#define CLEANUP()                       \
-    free(wsdkInstalls);                 \
-    free(vsInstalls);                   \
-    for (int i = 0; i < vsMaxLen; ++i)  \
-    {                                   \
-        free(msvcInstalls[i].installs); \
-    }                                   \
-    free(msvcInstalls)
-
-    for (int i = 1; i < argc; i++)
-    {
-        toLowerStr(argv[i]);
-        if (strcmp(argv[i], "/listsdks") == 0)
-        {
-            listSDKs(wsdkInstalls, wsdkMaxLen, vsInstalls, vsMaxLen, msvcInstalls, wsdk, vs, ms);
-            goto _cleanup;
-        } else if(strcmp(argv[i], "/help") == 0) {
-            printHelp = true;
-        } else if(strcmp(argv[i], "/version") == 0) {
-            printf("mavra %s\n", MAVRA_VERSION);
-            goto _cleanup;
-        } else if(strcmp(argv[i], "/getwinsdk") == 0) {
-            printf("%s\n", wsdkInstalls[wsdk].version);
-            goto _cleanup;
-        } else if(strcmp(argv[i], "/getvs") == 0) {
-            printf("%s -- %s\n", vsInstalls[vs].displayName, vsInstalls[vs].version);
-            goto _cleanup;
-        } else if(strcmp(argv[i], "/getmsvc") == 0) {
-            printf("%s\n", msvcInstalls[vs].installs[ms].version);
-            goto _cleanup;
-        } else {
-            if (beginsWith(argv[i], "/setwinsdk:"))
-            {
-                argv[i] += strlen("/setwinsdk:");
-                int val = atoi(argv[i]);
-
-                if (val < 1 || val > wsdkMaxLen)
-                {
-                    fprintf(errfile, "error: failed to set Windows SDK: value (%d) is out of bounds. expected integer between %d and number of elements available (%d).\n", val, 1, wsdkMaxLen);
-
-                    CLEANUP();
-
-                    return 32;
-                }
-
-                wsdk = val - 1;
-                
-                printf("selected Windows Kit %s.\n", wsdkInstalls[wsdk].version);
-                
-                changed = true;
-            }
-            else if (beginsWith(argv[i], "/setvs:"))
-            {
-                argv[i] += strlen("/setvs:");
-                int val = atoi(argv[i]);
-
-                if (val < 1 || val > vsMaxLen)
-                {
-                    fprintf(errfile, "error: failed to set Visual Studio version: value (%d) is out of bounds. expected integer between %d and number of elements available (%d).\n", val, 1, vsMaxLen);
-
-                    CLEANUP();
-
-                    return 33;
-                }
-
-                vs = val - 1;
-
-                printf("selected %s -- %s.\n", vsInstalls[vs].displayName, vsInstalls[vs].version);
-
-                changed = true;
-            }
-            else if (beginsWith(argv[i], "/setmsvc:"))
-            {
-                argv[i] += strlen("/setmsvc:");
-                int val = atoi(argv[i]);
-
-                int msvcMaxLen = 0;
-
-                for (int i = 0; i < vsMaxLen; ++i)
-                {
-                    msvcMaxLen += vsInstalls[i].msvcInstallCount;
-                }
-
-                if (val < 1 || val > msvcMaxLen)
-                {
-                    fprintf(errfile, "error: failed to set MSVC version: value (%d) is out of bounds. expected integer between %d and number of elements available (%d).\n", val, 1, msvcMaxLen);
-
-                    CLEANUP();
-
-                    return 34;
-                }
-
-                int remaining = val - 1;
-
-                for (int i = 0; i < vsMaxLen; ++i)
-                {
-                    if (remaining < vsInstalls[i].msvcInstallCount)
-                    {
-                        vs = i;
-                        ms = remaining;
-
-                        printf("selected MSVC %s from %s -- %s.\n",
-                               msvcInstalls[vs].installs[ms].version,
-                               vsInstalls[vs].displayName,
-                               vsInstalls[vs].version);
-
-                        break;
-                    }
-
-                    remaining -= vsInstalls[i].msvcInstallCount;
-                }
-
-                changed = true;
-            }
-        }
-    }
-
-    if(changed) {
-        SAVE_DATA();
-        goto _cleanup;
-    }
-
-    char *raw_args = GetCommandLineA();
-
-    if (MASM_ARCHITECTURE_AGNOSTIC_BUILD)
-    {
-        for (int i = occurence(raw_args, "/x64"); i != strlen(raw_args); i = occurence(raw_args, "/x64"))
-        {
-            targetArchitecture = 64;
-            memset(raw_args + i, ' ', 4);
-        }
-    }
-
-    // strip the executable name from the arg and the two spaces
-    size_t len = strlen(argv[0]) + 2;
-    raw_args += len;
-    char cmdBuf[8192] = {0}, cmdBuf2[sizeof(cmdBuf)] = {0};
-
-#if defined(LINKER_MODE) && LINKER_MODE == 0
-    snprintf(cmdBuf, sizeof(cmdBuf), "\"%s\\VC\\Tools\\MSVC\\%s\\bin\\Hostx%s\\x%d\\%s\"", vsInstalls[vs].dir, msvcInstalls[vs].installs[ms], XSTR(ARCHITECTURE), targetArchitecture, (targetArchitecture == 86) ? "ml" : "ml64");
-#elif defined(LINKER_MODE) && LINKER_MODE == 1
-    snprintf(cmdBuf, sizeof(cmdBuf), "\"%s\\VC\\Tools\\MSVC\\%s\\bin\\Hostx%s\\x%d\\link\"", vsInstalls[vs].dir, msvcInstalls[vs].installs[ms], XSTR(ARCHITECTURE), targetArchitecture);
-#endif // definedE(LINKER_MODE) && LINKED_MODE == 0
-
-    if (argc > 1)
-    {
-        char cLibPathBuf[PATH_LEN_MAX] = {0};
-        // retrieve c runtime
-        snprintf(cLibPathBuf, PATH_LEN_MAX, "%sLib\\%s\\", wsdkInstalls[wsdk].dir, wsdkInstalls[wsdk].version);
-
-        char cwdBuf[PATH_LEN_MAX] = {0};
-        GetCurrentDirectoryA((DWORD)PATH_LEN_MAX, cwdBuf);
-
-#if defined(LINKER_MODE) && LINKER_MODE == 1
-        snprintf(cmdBuf, PATH_LEN_MAX, "%s %s /LIBPATH:\"%sucrt\\x%d\" /LIBPATH:\"%sum\\x%d\" /LIBPATH:\"%s\\VC\\Tools\\MSVC\\%s\\lib\\x%d\"", cmdBuf, raw_args, cLibPathBuf, targetArchitecture, cLibPathBuf, targetArchitecture, vsInstalls[vs].dir, msvcInstalls[vs].installs[ms], targetArchitecture);
-#else
-        snprintf(cmdBuf2, PATH_LEN_MAX, "%s %s /link /LIBPATH:\"%sucrt\\x%d\" /link /LIBPATH:\"%sum\\x%d\" /link /LIBPATH:\"%s\\VC\\Tools\\MSVC\\%s\\lib\\x%d\"", cmdBuf, raw_args, cLibPathBuf, targetArchitecture, cLibPathBuf, targetArchitecture, vsInstalls[vs].dir, msvcInstalls[vs].installs[ms], targetArchitecture);
-        memcpy(cmdBuf, cmdBuf2, sizeof(cmdBuf2));
-#endif // defined(LINKER_MODE) && LINKER_MODE == 0
-    }
-
-#if defined(LINKER_MODE) && LINKER_MODE == 1
-    if (argc == 1)
-        printHelp = true;
-#endif // defined(LINKER_MODE) && LINKER_MODE == 1
-
-    STARTUPINFOA si = {0};
-    PROCESS_INFORMATION pi = {0};
-
-    si.cb = sizeof(si);
-
-    if (CreateProcessA(NULL, cmdBuf, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
-    {
-        WaitForSingleObject(pi.hProcess, INFINITE);
-
-        DWORD temp;
-        GetExitCodeProcess(pi.hProcess, &temp);
-        exitCode = (int)temp;
-
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-
-        // rogue file left out by masm
-        FILE *f = fopen("mllink$.lnk", "r");
-        if (f)
-        {
-            fclose(f);
-            system("del mllink$.lnk");
-        }
-
-        if (printHelp)
-        {
-#if defined(LINKER_MODE) && LINKER_MODE == 0
-            printf("/ListSDKs List all of the SDKs (Windows SDK, Visual Studio, MSVC)\n");
-            printf("/SetWinSDK:<int> Sets the Windows SDK\n");
-            printf("/SetVS:<int> Sets the Visual Studio toolchain\n");
-            printf("/SetMSVC:<int> Sets the MSVC toolchain\n");
-            printf("/GetWinSDK Gets the Windows SDK\n");
-            printf("/GetVS Gets the Visual Studio toolchain\n");
-            printf("/GetMSVC Gets the MSVC toolchain\n");
-            printf("/version Prints the Mavra version\n");
-#if defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && defined(ARCHITECTURE) && (MASM_ARCHITECTURE_AGNOSTIC_BUILD == 1) && (ARCHITECTURE != 86)
-            printf("/x64 Sets 64-bit mode\n");
-#endif // defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && defined(ARCHITECTURE) && (MASM_ARCHITECTURE_AGNOSTIC_BUILD == 1) && (ARCHITECTURE != 86)
-#elif defined(LINKER_MODE) && LINKER_MODE == 1
-            if (argc == 1)
-            {
-                printf("\t\b\b/LISTSDKS\n");
-                printf("\t\b\b/SETWINSDK:int\n");
-                printf("\t\b\b/SETVS:int\n");
-                printf("\t\b\b/SETMSVC:int\n");
-                printf("\t\b\b/GETWINSDK\n");
-                printf("\t\b\b/GETVS\n");
-                printf("\t\b\b/GETMSVC\n");
-                printf("\t\b\b/VERSION\n");
-#if defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && defined(ARCHITECTURE) && (MASM_ARCHITECTURE_AGNOSTIC_BUILD == 1) && (ARCHITECTURE != 86)
-                printf("\t\b\b/X64\n");
-#endif // defined(MASM_ARCHITECTURE_AGNOSTIC_BUILD) && defined(ARCHITECTURE) && (MASM_ARCHITECTURE_AGNOSTIC_BUILD == 1) && (ARCHITECTURE != 86)
-            }
-#endif // defined(LINKER_MODE) && LINKER_MODE == 0
-        }
-    }
-
-_cleanup:
-    free(wsdkInstalls);
-    free(vsInstalls);
-
-    for (int i = 0; i < vsMaxLen; ++i)
-    {
-        free(msvcInstalls[i].installs);
-    }
-
-    free(msvcInstalls);
-    return exitCode;
 }

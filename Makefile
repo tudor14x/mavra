@@ -1,48 +1,26 @@
 CC = gcc
-CFLAGS = -static
+CFLAGS = -I./src/ -static
 LDFLAGS = -luserenv
+SRC = ./src/mavra.c ./src/main.c ./src/string_utils.c
 
-
-all: x64 x86
-x64: masm ml link ml64 link64
-x86: masm86 ml86 link86
+all: masm ml link ml64 link64
 
 masm: src/mavra.c src/mavra.h
 	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x64 mkdir bin\x64 2>nul
-	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=1 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x64/$@.exe
-
-masm86: src/mavra.c src/mavra.h
-	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x86 mkdir bin\x86 2>nul
-	$(CC) -DARCHITECTURE=86 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=1 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x86/masm.exe
+	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=1 $(SRC) $(CFLAGS) $(LDFLAGS) -o ./bin/$@.exe
 
 ml: src/mavra.c src/mavra.h
 	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x86 mkdir bin\x86 2>nul
-	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=86 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x64/$@.exe
-
-ml86: src/mavra.c src/mavra.h
-	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x86 mkdir bin\x86 2>nul
-	$(CC) -DARCHITECTURE=86 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=86 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x86/ml.exe
+	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=86 $(SRC) $(CFLAGS) $(LDFLAGS) -o ./bin/$@.exe
 
 ml64: src/mavra.c src/mavra.h
 	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x64 mkdir bin\x64 2>nul
-	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=64 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x64/$@.exe
+	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=64 $(SRC) $(CFLAGS) $(LDFLAGS) -o ./bin/$@.exe
 
 link: src/mavra.c src/mavra.h
 	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x86 mkdir bin\x86 2>nul
-	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=86 -DLINKER_MODE=1 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x64/$@.exe
-
-link86: src/mavra.c src/mavra.h
-	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x86 mkdir bin\x86 2>nul
-	$(CC) -DARCHITECTURE=86 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=86 -DLINKER_MODE=1 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x86/link.exe
+	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=86 -DLINKER_MODE=1 $(SRC) $(CFLAGS) $(LDFLAGS) -o ./bin/$@.exe
 
 link64: src/mavra.c src/mavra.h
 	@if not exist bin mkdir bin 2>nul
-	@if not exist bin\x64 mkdir bin\x64 2>nul
-	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=64 -DLINKER_MODE=1 -I./src/ ./src/mavra.c $(CFLAGS) $(LDFLAGS) -o ./bin/x64/$@.exe
+	$(CC) -DARCHITECTURE=64 -DMASM_ARCHITECTURE_AGNOSTIC_BUILD=0 -DTARGET_MASM_ARCHITECTURE=64 -DLINKER_MODE=1 $(SRC) $(CFLAGS) $(LDFLAGS) -o ./bin/$@.exe

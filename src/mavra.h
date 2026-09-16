@@ -34,13 +34,21 @@
 #define MASM_ARCHITECTURE_AGNOSTIC_BUILD 1
 #endif // MASM_ARCHITECTURE_AGNOSTIC_BUILD
 
-#define MAVRA_VERSION "v1.0"
+#define MAVRA_VERSION "v0.1"
+
+#define MAVRA_64_BIT_MODE_ARG "/x64"
+
+// linker mode arg is the same thing but with all caps
+#define MAVRA_64_BIT_MODE_LINKER_ARG "/X64"
 
 #ifndef LINKER_MODE
 #define LINKER_MODE 0
 #endif
 
 #define _DEBUG
+
+extern FILE *errfile;
+extern char userPath[PATH_LEN_MAX];
 
 typedef struct WSDKInstall {
     char dir[PATH_LEN_MAX];
@@ -62,5 +70,29 @@ typedef struct VSInstall {
     char dir[PATH_LEN_MAX];
     int  msvcInstallCount;
 } VSInstall;
+
+typedef struct MavraContext {
+    WSDKInstall *wsdkInstalls;
+    int wsdkInstallsLen;
+
+    VSInstall *vsInstalls;
+    int vsInstallsLen;
+
+    MSVCInstalls *msvcInstalls;
+    int msvcInstallsLen;
+
+    int wsdk, vs, ms;
+} MavraContext;
+
+int getUserPath(char **dst);
+int loadWSDKInstalls(MavraContext *ctx);
+int getCommandCode(char *cmdBuf);
+bool doesVswhereExist(char *out);
+int loadVSInstalls(MavraContext *ctx);
+int loadMSVCInstalls(MavraContext *ctx);
+int createDataFile(FILE **dataFile, char *const dataFilePath, MavraContext *ctx);
+int readDataFile(FILE **dataFile, char *const dataFilePath, MavraContext *ctx);
+void freeMavraContext(MavraContext *ctx);
+void listSDKs(MavraContext *ctx);
 
 #endif // MAVRA_H
